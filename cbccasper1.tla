@@ -17,10 +17,10 @@ CONSTANTS
         msg_estimate = <<>>,
         msg_justification = <<>>,
 \*        validator_weights = [a \in validators |-> 1],
-        validator_received_messages = <<{}, {}, {}, {}, {}>>,
+        validator_received_messages = <<{}, {}, {}, {}, {}, {}>>,
 \*        validator_justified_messages = [a \in validators |-> {}],
         cur_msg_id = 1,
-        tmp = <<0, 0, 0>>,
+        tmp = <<0, 0, 0, 0, 0, 0>>,
         new_msg
 \*        validators_initial_values = <<1,0,1,0,1>>;
         
@@ -70,7 +70,10 @@ CONSTANTS
         binary_estimator(messages) ==
             IF score(0, messages) > score(1, messages)
             THEN 0
-            ELSE 1
+            ELSE 
+                IF score(1, messages) > score(0, messages)
+                THEN 1
+                ELSE -1
 
 
         equivocation(m1, m2) ==
@@ -172,7 +175,11 @@ CONSTANTS
         if validator_received_messages[validator] = {} then
             make_message(validator, validators_initial_values[validator], {})
         else
-            make_message(validator, binary_estimator(validator_received_messages[validator]), validator_received_messages[validator])
+            if binary_estimator(validator_received_messages[validator]) = -1 then
+                skip;
+            else
+                make_message(validator, binary_estimator(validator_received_messages[validator]), validator_received_messages[validator])
+            end if;
         end if;  
     end macro;
     
@@ -184,17 +191,17 @@ CONSTANTS
     end macro;
     
     
-    fair process v \in validators begin
+    process v \in validators begin
         Validate:
         while cur_msg_id < message_ids do 
             if tmp[self] = 0 then
                 init_validator(self)
             else
-                either
-                    send_message(self)
-                or
-                    fetch_message(self)
-            end either;
+\*                either
+                    fetch_message(self);
+\*                or
+                    send_message(self);
+\*            end either;
             end if;
         end while;
     end process;
@@ -250,7 +257,10 @@ score(estimate, messages) ==
 binary_estimator(messages) ==
     IF score(0, messages) > score(1, messages)
     THEN 0
-    ELSE 1
+    ELSE
+        IF score(1, messages) > score(0, messages)
+        THEN 1
+        ELSE -1
 
 
 equivocation(m1, m2) ==
@@ -330,9 +340,9 @@ Init == (* Global variables *)
         /\ msg_sender = <<>>
         /\ msg_estimate = <<>>
         /\ msg_justification = <<>>
-        /\ validator_received_messages = <<{}, {}, {}, {}, {}>>
+        /\ validator_received_messages = <<{}, {}, {}, {}, {}, {}>>
         /\ cur_msg_id = 1
-        /\ tmp = <<0, 0, 0>>
+        /\ tmp = <<0, 0, 0, 0, 0, 0>>
         /\ new_msg = defaultInitValue
         /\ pc = [self \in ProcSet |-> "Validate"]
 
@@ -357,45 +367,50 @@ Validate(self) == /\ pc[self] = "Validate"
                                                    /\ cur_msg_id' = cur_msg_id + 1
                                         /\ tmp' = [tmp EXCEPT ![self] = 1]
                                         /\ UNCHANGED new_msg
-                                   ELSE /\ \/ /\ IF validator_received_messages[self] = {}
-                                                    THEN /\ IF \E x \in all_msg :
-                                                               /\ msg_sender[x] = self
-                                                               /\ msg_estimate[x] = (validators_initial_values[self])
-                                                               /\ msg_justification[x] = ({})
-                                                               THEN /\ TRUE
-                                                                    /\ UNCHANGED << all_msg, 
-                                                                                    msg_sender, 
-                                                                                    msg_estimate, 
-                                                                                    msg_justification, 
-                                                                                    cur_msg_id >>
-                                                               ELSE /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                                    /\ msg_sender' = Append(msg_sender, self)
-                                                                    /\ msg_estimate' = Append(msg_estimate, (validators_initial_values[self]))
-                                                                    /\ msg_justification' = Append(msg_justification, ({}))
-                                                                    /\ cur_msg_id' = cur_msg_id + 1
-                                                    ELSE /\ IF \E x \in all_msg :
-                                                               /\ msg_sender[x] = self
-                                                               /\ msg_estimate[x] = (binary_estimator(validator_received_messages[self]))
-                                                               /\ msg_justification[x] = (validator_received_messages[self])
-                                                               THEN /\ TRUE
-                                                                    /\ UNCHANGED << all_msg, 
-                                                                                    msg_sender, 
-                                                                                    msg_estimate, 
-                                                                                    msg_justification, 
-                                                                                    cur_msg_id >>
-                                                               ELSE /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                                    /\ msg_sender' = Append(msg_sender, self)
-                                                                    /\ msg_estimate' = Append(msg_estimate, (binary_estimator(validator_received_messages[self])))
-                                                                    /\ msg_justification' = Append(msg_justification, (validator_received_messages[self]))
-                                                                    /\ cur_msg_id' = cur_msg_id + 1
-                                              /\ UNCHANGED <<validator_received_messages, new_msg>>
-                                           \/ /\ IF \E x \in all_msg : x \notin validator_received_messages[self]
-                                                    THEN /\ new_msg' = (CHOOSE x \in all_msg : x \notin validator_received_messages[self])
-                                                         /\ validator_received_messages' = [validator_received_messages EXCEPT ![self] = validator_received_messages[self] \union {new_msg'}]
-                                                    ELSE /\ TRUE
-                                                         /\ UNCHANGED << validator_received_messages, 
-                                                                         new_msg >>
-                                              /\ UNCHANGED <<all_msg, msg_sender, msg_estimate, msg_justification, cur_msg_id>>
+                                   ELSE /\ IF \E x \in all_msg : x \notin validator_received_messages[self]
+                                              THEN /\ new_msg' = (CHOOSE x \in all_msg : x \notin validator_received_messages[self])
+                                                   /\ validator_received_messages' = [validator_received_messages EXCEPT ![self] = validator_received_messages[self] \union {new_msg'}]
+                                              ELSE /\ TRUE
+                                                   /\ UNCHANGED << validator_received_messages, 
+                                                                   new_msg >>
+                                        /\ IF validator_received_messages'[self] = {}
+                                              THEN /\ IF \E x \in all_msg :
+                                                         /\ msg_sender[x] = self
+                                                         /\ msg_estimate[x] = (validators_initial_values[self])
+                                                         /\ msg_justification[x] = ({})
+                                                         THEN /\ TRUE
+                                                              /\ UNCHANGED << all_msg, 
+                                                                              msg_sender, 
+                                                                              msg_estimate, 
+                                                                              msg_justification, 
+                                                                              cur_msg_id >>
+                                                         ELSE /\ all_msg' = (all_msg \union {cur_msg_id})
+                                                              /\ msg_sender' = Append(msg_sender, self)
+                                                              /\ msg_estimate' = Append(msg_estimate, (validators_initial_values[self]))
+                                                              /\ msg_justification' = Append(msg_justification, ({}))
+                                                              /\ cur_msg_id' = cur_msg_id + 1
+                                              ELSE /\ IF binary_estimator(validator_received_messages'[self]) = -1
+                                                         THEN /\ TRUE
+                                                              /\ UNCHANGED << all_msg, 
+                                                                              msg_sender, 
+                                                                              msg_estimate, 
+                                                                              msg_justification, 
+                                                                              cur_msg_id >>
+                                                         ELSE /\ IF \E x \in all_msg :
+                                                                    /\ msg_sender[x] = self
+                                                                    /\ msg_estimate[x] = (binary_estimator(validator_received_messages'[self]))
+                                                                    /\ msg_justification[x] = (validator_received_messages'[self])
+                                                                    THEN /\ TRUE
+                                                                         /\ UNCHANGED << all_msg, 
+                                                                                         msg_sender, 
+                                                                                         msg_estimate, 
+                                                                                         msg_justification, 
+                                                                                         cur_msg_id >>
+                                                                    ELSE /\ all_msg' = (all_msg \union {cur_msg_id})
+                                                                         /\ msg_sender' = Append(msg_sender, self)
+                                                                         /\ msg_estimate' = Append(msg_estimate, (binary_estimator(validator_received_messages'[self])))
+                                                                         /\ msg_justification' = Append(msg_justification, (validator_received_messages'[self]))
+                                                                         /\ cur_msg_id' = cur_msg_id + 1
                                         /\ tmp' = tmp
                              /\ pc' = [pc EXCEPT ![self] = "Validate"]
                         ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
@@ -410,8 +425,7 @@ Next == (\E self \in validators: v(self))
            \/ (* Disjunct to prevent deadlock on termination *)
               ((\A self \in ProcSet: pc[self] = "Done") /\ UNCHANGED vars)
 
-Spec == /\ Init /\ [][Next]_vars
-        /\ \A self \in validators : WF_vars(v(self))
+Spec == Init /\ [][Next]_vars
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
