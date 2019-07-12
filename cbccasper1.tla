@@ -155,7 +155,7 @@ CONSTANTS
 
         
         e_clique_estimate_safety(estimate, messages) == 
-            /\ PrintT("test1")
+\*            /\ PrintT("test1")
             /\ \E ss \in e_clique(estimate, messages):
                 /\ 2 * Sum({validator_weights[v] : v \in ss}) - Sum({validator_weights[v] : v \in validators}) > byzantine_threshold - fault_weight(messages)
                 
@@ -182,6 +182,7 @@ CONSTANTS
            then 
 \*                print("Message already exists");
                skip;
+\*                fetch_message(validator);
         else
             all_msg := all_msg \union {cur_msg_id};
             msg_sender := Append(msg_sender, validator);
@@ -213,20 +214,26 @@ CONSTANTS
     end macro;
     
     
-    fair process v \in validators begin
+    process v \in validators begin
         Validate:
-        while cur_msg_id <= message_ids \/  ~(~e_clique_estimate_safety(0, validator_received_messages[self]) /\ ~e_clique_estimate_safety(1, validator_received_messages[self])) do 
+        while cur_msg_id <= message_ids /\  (~e_clique_estimate_safety(0, validator_received_messages[self]) /\ ~e_clique_estimate_safety(1, validator_received_messages[self])) do 
 \*            while cur_msg_id < message_ids do 
             if tmp[self] = 0 then
                 init_validator(self);
+\*                print(self);
 \*                print("init");
+\*                print("----");
             else
                 either
                     fetch_message(self);
+\*                    print(self);
 \*                    print("fetch");
+\*                    print("----");
                 or
                     send_message(self);
+\*                    print(self);
 \*                    print("send");
+\*                    print("----");
             end either;
             end if;
         end while;
@@ -374,7 +381,7 @@ e_clique(estimate, messages) == {
 
 
 e_clique_estimate_safety(estimate, messages) ==
-    /\ PrintT("test1")
+
     /\ \E ss \in e_clique(estimate, messages):
         /\ 2 * Sum({validator_weights[v] : v \in ss}) - Sum({validator_weights[v] : v \in validators}) > byzantine_threshold - fault_weight(messages)
 
@@ -396,7 +403,7 @@ Init == (* Global variables *)
         /\ pc = [self \in ProcSet |-> "Validate"]
 
 Validate(self) == /\ pc[self] = "Validate"
-                  /\ IF cur_msg_id <= message_ids \/  ~(~e_clique_estimate_safety(0, validator_received_messages[self]) /\ ~e_clique_estimate_safety(1, validator_received_messages[self]))
+                  /\ IF cur_msg_id <= message_ids /\  (~e_clique_estimate_safety(0, validator_received_messages[self]) /\ ~e_clique_estimate_safety(1, validator_received_messages[self]))
                         THEN /\ IF tmp[self] = 0
                                    THEN /\ validator_received_messages' = [validator_received_messages EXCEPT ![self] = validator_received_messages[self] \union {cur_msg_id}]
                                         /\ IF \E x \in all_msg :
@@ -453,8 +460,7 @@ Next == (\E self \in validators: v(self))
            \/ (* Disjunct to prevent deadlock on termination *)
               ((\A self \in ProcSet: pc[self] = "Done") /\ UNCHANGED vars)
 
-Spec == /\ Init /\ [][Next]_vars
-        /\ \A self \in validators : WF_vars(v(self))
+Spec == Init /\ [][Next]_vars
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
