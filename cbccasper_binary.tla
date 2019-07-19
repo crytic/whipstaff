@@ -144,10 +144,7 @@ CONSTANTS
         e_clique_estimate_safety(estimate, messages) == 
             /\ \E ss \in e_clique(estimate, messages):
                 /\ 2 * Sum({validator_weights[v] : v \in ss}) - Sum({validator_weights[v] : v \in validators}) > byzantine_threshold - fault_weight(messages)
-        
-        
-\*        check_safety_with_oracle ==
-\*            <>(e_clique_estimate_safety(0, all_msg) \/ e_clique_estimate_safety(1, all_msg))
+\*                /\ PrintT(ss)
             
         
         validator_received_msg(validator) == 
@@ -159,23 +156,27 @@ CONSTANTS
         
         get_equiv_receivers(validator) == CHOOSE x \in SUBSET(validators \ {validator}) : TRUE        
 
+        check_safety_with_oracle ==
+            LET v == CHOOSE v \in (validators \ byzantine_fault_nodes) : TRUE
+            IN <>(e_clique_estimate_safety(0, validator_received_msg(v)) \/ e_clique_estimate_safety(1, validator_received_msg(v)))
+    
 
     end define;
 
     
     macro make_message(validator, estimate, justification) begin
-        if \E x \in validator_received_msg(validator) :
-            /\ msg_sender[x] = validator
-            /\ msg_justification[x] = justification
-            then
-                skip;
-        else
+\*        if \E x \in validator_received_msg(validator) :
+\*            /\ msg_sender[x] = validator
+\*            /\ msg_justification[x] = justification
+\*            then
+\*                skip;
+\*        else
             msg_sender := Append(msg_sender, validator);
             msg_estimate := Append(msg_estimate, estimate);
             msg_justification := Append(msg_justification, justification);
             all_msg := all_msg \union {cur_msg_id};
             cur_msg_id := cur_msg_id + 1;
-        end if;
+\*        end if;
     end macro;
     
     
@@ -202,7 +203,7 @@ CONSTANTS
     end macro;
     
    
-    process v \in validators begin
+    fair process v \in validators begin
         Validate:
         while cur_msg_id <= message_ids do 
             if validator_init_done[self] = 0 /\ self \notin byzantine_fault_nodes then
@@ -340,9 +341,6 @@ e_clique_estimate_safety(estimate, messages) ==
 
 
 
-
-
-
 validator_received_msg(validator) ==
     (all_msg \ equivocating_msg) \union
     {x \in equivocating_msg : validator \in equiv_msg_receivers[x]}
@@ -351,6 +349,10 @@ validator_received_msg(validator) ==
 get_equivocation_subset_msg(validator) == CHOOSE x \in SUBSET(validator_received_msg(validator)) : TRUE
 
 get_equiv_receivers(validator) == CHOOSE x \in SUBSET(validators \ {validator}) : TRUE
+
+check_safety_with_oracle ==
+    LET v == CHOOSE v \in (validators \ byzantine_fault_nodes) : TRUE
+    IN <>(e_clique_estimate_safety(0, validator_received_msg(v)) \/ e_clique_estimate_safety(1, validator_received_msg(v)))
 
 
 vars == << all_msg, equivocating_msg, msg_sender, msg_estimate, 
@@ -375,59 +377,32 @@ Init == (* Global variables *)
 Validate(self) == /\ pc[self] = "Validate"
                   /\ IF cur_msg_id <= message_ids
                         THEN /\ IF validator_init_done[self] = 0 /\ self \notin byzantine_fault_nodes
-                                   THEN /\ IF \E x \in validator_received_msg(self) :
-                                               /\ msg_sender[x] = self
-                                               /\ msg_justification[x] = ({cur_msg_id})
-                                              THEN /\ TRUE
-                                                   /\ UNCHANGED << all_msg, 
-                                                                   msg_sender, 
-                                                                   msg_estimate, 
-                                                                   msg_justification, 
-                                                                   cur_msg_id >>
-                                              ELSE /\ msg_sender' = Append(msg_sender, self)
-                                                   /\ msg_estimate' = Append(msg_estimate, (validators_initial_values[self]))
-                                                   /\ msg_justification' = Append(msg_justification, ({cur_msg_id}))
-                                                   /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                   /\ cur_msg_id' = cur_msg_id + 1
+                                   THEN /\ msg_sender' = Append(msg_sender, self)
+                                        /\ msg_estimate' = Append(msg_estimate, (validators_initial_values[self]))
+                                        /\ msg_justification' = Append(msg_justification, ({cur_msg_id}))
+                                        /\ all_msg' = (all_msg \union {cur_msg_id})
+                                        /\ cur_msg_id' = cur_msg_id + 1
                                         /\ validator_init_done' = [validator_init_done EXCEPT ![self] = 1]
                                         /\ UNCHANGED << equivocating_msg, 
                                                         equiv_msg_receivers, 
                                                         cur_subset >>
                                    ELSE /\ IF self \notin byzantine_fault_nodes
-                                              THEN /\ IF \E x \in validator_received_msg(self) :
-                                                          /\ msg_sender[x] = self
-                                                          /\ msg_justification[x] = (validator_received_msg(self))
-                                                         THEN /\ TRUE
-                                                              /\ UNCHANGED << all_msg, 
-                                                                              msg_sender, 
-                                                                              msg_estimate, 
-                                                                              msg_justification, 
-                                                                              cur_msg_id >>
-                                                         ELSE /\ msg_sender' = Append(msg_sender, self)
-                                                              /\ msg_estimate' = Append(msg_estimate, (binary_estimator(validator_received_msg(self))))
-                                                              /\ msg_justification' = Append(msg_justification, (validator_received_msg(self)))
-                                                              /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                              /\ cur_msg_id' = cur_msg_id + 1
+                                              THEN /\ msg_sender' = Append(msg_sender, self)
+                                                   /\ msg_estimate' = Append(msg_estimate, (binary_estimator(validator_received_msg(self))))
+                                                   /\ msg_justification' = Append(msg_justification, (validator_received_msg(self)))
+                                                   /\ all_msg' = (all_msg \union {cur_msg_id})
+                                                   /\ cur_msg_id' = cur_msg_id + 1
                                                    /\ UNCHANGED << equivocating_msg, 
                                                                    equiv_msg_receivers, 
                                                                    cur_subset >>
                                               ELSE /\ equiv_msg_receivers' = [equiv_msg_receivers EXCEPT ![cur_msg_id] = get_equiv_receivers(self)]
                                                    /\ equivocating_msg' = (equivocating_msg \union {cur_msg_id})
                                                    /\ cur_subset' = get_equivocation_subset_msg(self)
-                                                   /\ IF \E x \in validator_received_msg(self) :
-                                                          /\ msg_sender[x] = self
-                                                          /\ msg_justification[x] = cur_subset'
-                                                         THEN /\ TRUE
-                                                              /\ UNCHANGED << all_msg, 
-                                                                              msg_sender, 
-                                                                              msg_estimate, 
-                                                                              msg_justification, 
-                                                                              cur_msg_id >>
-                                                         ELSE /\ msg_sender' = Append(msg_sender, self)
-                                                              /\ msg_estimate' = Append(msg_estimate, (binary_estimator(cur_subset')))
-                                                              /\ msg_justification' = Append(msg_justification, cur_subset')
-                                                              /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                              /\ cur_msg_id' = cur_msg_id + 1
+                                                   /\ msg_sender' = Append(msg_sender, self)
+                                                   /\ msg_estimate' = Append(msg_estimate, (binary_estimator(cur_subset')))
+                                                   /\ msg_justification' = Append(msg_justification, cur_subset')
+                                                   /\ all_msg' = (all_msg \union {cur_msg_id})
+                                                   /\ cur_msg_id' = cur_msg_id + 1
                                         /\ UNCHANGED validator_init_done
                              /\ pc' = [pc EXCEPT ![self] = "Validate"]
                         ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
@@ -444,7 +419,8 @@ Next == (\E self \in validators: v(self))
            \/ (* Disjunct to prevent deadlock on termination *)
               ((\A self \in ProcSet: pc[self] = "Done") /\ UNCHANGED vars)
 
-Spec == Init /\ [][Next]_vars
+Spec == /\ Init /\ [][Next]_vars
+        /\ \A self \in validators : WF_vars(v(self))
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
@@ -452,5 +428,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Jul 18 02:45:46 PDT 2019 by anneouyang
+\* Last modified Thu Jul 18 23:06:36 PDT 2019 by anneouyang
 \* Created Tue Jul 16 01:26:45 PDT 2019 by anneouyang
