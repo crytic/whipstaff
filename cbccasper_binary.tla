@@ -3,18 +3,41 @@
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
 
-
-CONSTANTS
-    consensus_values,            
-    validators,                  
-    message_ids,                 
+\* Constants are specified in the model checker before running.
+\* The first four are parameters of the protocol, and the rest are defined for purposes of model checking
+\*    - validators: a set specifying the names (consecutive integers) of the validators
+\*    - validator_weights: a tuple assigning a weight (integer) to each validator
+\*    - byzantine_threshold: a number less than the sum of the weights of all the validators
+\*    - consensus_values: the set of values the validators decide on; the binary values 0 and 1 in this model
+\*    - validator_initial_values: the estimates without receiving other messages
+\*    - messages_ids: a number used to limit the number of messages sent in the model
+\*    - byzantine_fault_nodes: define the equivocating nodes
+CONSTANTS           
+    validators,   
+    validator_weights,                               
     byzantine_threshold,
+    consensus_values, 
     validators_initial_values,
-    validator_weights,
-    byzantine_fault_nodes 
+    message_ids, 
+    byzantine_fault_nodes
+ 
+    
+    
+\* The following is written in PlusCal, which will be transpiled to TLA+. 
+\* The transpiled TLA+ code is appended to the PlusCal code, and the PlusCal code will appear as comments. 
     
 (**** --algorithm algo
 
+\*    variables are updated as the model checker runs:
+\*        - all_msg: a set of all messages ids (integers)
+\*        - equivocating_msg: a set specifying all the equivocating messages (not all the validators receive that same message)
+\*        - msg_sender: a tuple specifying the sender of the message with the given id
+\*        - msg_estimate: a tuple specifying the estimate of the message with the given id
+\*        - msg_justification: a tuple specifying the justification of the message (set of messages used to calculate the estimate) with the given id,
+\*        - cur_msg_id: the id of the current message being sent; incremented after every message
+\*        - validator_init_done: a tuple indicating whether the validator has sent the initial message (1 is done; all the validators are initialized to 0 in the beginning)
+\*        - equiv_msg_receivers: a tuple specifying a subset of all validators receiving a certain equivocating message; if the message is not equivocating append the empty set
+\*        - cur_subset: a 'temp' variable used to store the set of validators receiving the current equivocating message
     variables
         all_msg = {},
         equivocating_msg = {},
@@ -22,14 +45,17 @@ CONSTANTS
         msg_estimate = <<>>,
         msg_justification = <<>>,
         cur_msg_id = 1,
-        validator_init_done = <<0, 0, 0>>,
-        equiv_msg_receivers = <<{}, {}, {}, {}, {}, {}, {}, {}, {}, {}>>,
-        new_msg,
+        validator_init_done = <<0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>,
+        equiv_msg_receivers = <<>>,
         cur_subset
 
 
     define
         
+\*         The dependencies of a message m1 are the messages in the justification of m1 
+\*         and in the justifications of the justifications of m1 and so on. The set is generated 
+\*         using a recursive function until the base case is reached - the only justification of 
+\*         a message is itself.
          dependencies(message) ==
             LET
                 RECURSIVE dep(_)
@@ -39,22 +65,22 @@ CONSTANTS
                     ELSE UNION{dep(msg2) : msg2 \in msg_justification[msg]}
             IN dep(message)
             
-            
+\*        Gets the dependencies of all the messages in a set of messages.    
         dependencies_set(messages) ==
             messages \union UNION{dependencies(m) : m \in messages}
             
-        
+\*        The latest message of a validator in an observed set of messages is the message for which
+\*        no other messages sent by the same validator justifies it.
         latest_message(validator, messages) ==
             {msg \in messages:
-\*                /\ PrintT(msg)
                 /\ msg_sender[msg] = validator
-                /\ \A msg2 \in messages:
-                    \/ msg = msg2
-                    \/ msg2 \notin dependencies(msg)
+                /\ ~\E msg2 \in messages:
+                    /\ msg_sender[msg2] = validator
+                    /\ msg /= msg2
+                    /\ msg \in dependencies(msg2)
             }
        
-        
-        \* operators used to find the sum of a set
+\*        Defines the Sum operator used to find the sum of all the elements in a set.
         Pick(S) == CHOOSE s \in S : TRUE
         RECURSIVE SetReduce(_, _, _)
             SetReduce(Op(_, _), S, value) == 
@@ -63,10 +89,15 @@ CONSTANTS
                                      
             Sum(S) == LET _op(a, b) == a + b IN SetReduce(_op, S, 0)
             
-            
+\*        The following define the estimator used in the binary consesnsus protocol.
+\*        The score of an estimate is the sum of the weights of all the validators having
+\*        the given estimate in its latest message in a set of observed messages.
+\*        The estimator returns the estimate with the larger score. If there's a tie,
+\*        in this example, the value 1 is used.     
         score(estimate, messages) == 
             LET ss == 
                 {v \in validators:
+                    /\ Cardinality(latest_message(v, messages)) = 1
                     /\ \E m \in latest_message(v, messages):
                         msg_estimate[m] = estimate}
                 ss2 == {validator_weights[v] : v \in ss}
@@ -74,39 +105,42 @@ CONSTANTS
 
 
         binary_estimator(messages) ==
-            IF score(0, messages) > score(1, messages)
-            THEN 0
-            ELSE 1
+            IF score(1, messages) > score(0, messages)
+            THEN 1
+            ELSE 0
             
-            
+\*        Two messages are equivocating if they have the same sender but do not justify each other.    
         equivocation(m1, m2) ==
+            /\ m1 /= m2
             /\ msg_sender[m1] = msg_sender[m2]
-            /\ m1 \notin msg_justification[m2]
-            /\ m2 \notin msg_justification[m1]
+            /\ m1 \notin dependencies(m2)
+            /\ m2 \notin dependencies(m1)
             
-            
+\*        A validator is byzantine faulty if it sends equivocating messages    
         byzantine_faulty_node(validator, messages) ==
             /\ \E m1 \in dependencies_set(messages): 
                 /\ \E m2 \in dependencies_set(messages):
                     /\ validator = msg_sender[m1]
                     /\ equivocation(m1, m2)
                     
-                    
+\*        Gets all the validators in a set of observed messages that appear as byzantine faulty            
         byzantine_nodes(messages) ==
             {v \in validators : byzantine_faulty_node(v, messages)}
             
-        
+\*        Returns the total weight of all byzatine faulty validators.
         fault_weight(messages) == 
-            Sum({validator_weights[v] : v \in byzantine_nodes(messages)})
+            LET byz == byzantine_nodes(messages)
+            IN Sum({validator_weights[v] : v \in byz})
                
-               
-        protocol_states == [t \in 1..Sum({validator_weights[v]: v \in validators}) 
-                            |-> {ss \in SUBSET(all_msg) : fault_weight(ss) < t}] 
-               
-               
+\*        A protocol state t is all the states (set of messages) with fault weight less than t.
+\*        A state transition is possible if one state is a subset of another.       
+        protocol_states(messages, t) == {ss \in SUBSET(messages) : fault_weight(ss) < t}
         protocol_executions(state1, state2) == state1 \subseteq state2
 
-
+\*        Two validators v1 and v2 are agreeing with each other if
+\*            - v1 has exactly one latest message in messages
+\*            - v2 has exactly one latest message in the justification of v1's latest message
+\*            - the latest messages have estimates that agree with each other
         validators_agreeing(v1, v2, estimate, messages) ==
             /\ Cardinality(latest_message(v1, messages)) = 1
             /\ LET v1_latest_msg == CHOOSE x \in latest_message(v1, messages) : TRUE
@@ -114,8 +148,10 @@ CONSTANTS
                 /\ LET v2_latest_msg == CHOOSE x \in latest_message(v2, msg_justification[v1_latest_msg]) : TRUE
                     IN estimate = msg_estimate[v2_latest_msg]
 
-
-
+\*        Two validators are disagreeing with each other if
+\*            - v1 has exactly one latest message in messages
+\*            - v2 has exactly one latest message in the justification of v1's latest message
+\*            - v2 has a new latest message that doens't agree with the estimate
         validators_disagreeing(v1, v2, estimate, messages) == 
             /\ Cardinality(latest_message(v1, messages)) = 1
             /\ LET v1_latest_msg == CHOOSE x \in latest_message(v1, messages) : TRUE
@@ -125,10 +161,9 @@ CONSTANTS
                         /\ estimate /= msg_estimate[m]
  
  
-        \* "e-clique":
-        \*    - a set of non-byzantine nodes in messages
-        \*    - mutually see each other agreeing with estimate in messages
-        \*    - mutually cannot see each other disagreeing with estimate in messages
+\*        An "e-clique" is a group of non-byzantine nodes in a set of observed messages such that :
+\*            - they mutually see each other agreeing with estimate in messages
+\*            - they mutually cannot see each other disagreeing with estimate in messages
         e_clique(estimate, messages) == {
             ss \in SUBSET(validators) : 
                 /\ \A v1 \in ss:
@@ -140,22 +175,23 @@ CONSTANTS
                             /\ ~validators_disagreeing(v1, v2, estimate, messages)
             }
 
-        
+\*        Finds the existence of an e-clique
         e_clique_estimate_safety(estimate, messages) == 
             /\ \E ss \in e_clique(estimate, messages):
-                /\ 2 * Sum({validator_weights[v] : v \in ss}) - Sum({validator_weights[v] : v \in validators}) > byzantine_threshold - fault_weight(messages)
-\*                /\ PrintT(ss)
+                /\ 2 * Sum({validator_weights[v] : v \in ss}) > Sum({validator_weights[v] : v \in validators}) + byzantine_threshold - fault_weight(messages)
             
-        
+\*        Gets the set of messges received by a particular valiadtor
         validator_received_msg(validator) == 
             (all_msg \ equivocating_msg) \union
             {x \in equivocating_msg : validator \in equiv_msg_receivers[x]}
             
-        
+\*        Returns a subset of received messages for an equivocating validator to generate potentially equivocating messages 
         get_equivocation_subset_msg(validator) == CHOOSE x \in SUBSET(validator_received_msg(validator)) : TRUE
         
-        get_equiv_receivers(validator) == CHOOSE x \in SUBSET(validators \ {validator}) : TRUE        
+\*        Returns a subset of validators receiving a particular equivocating message
+        get_equiv_receivers(validator) == CHOOSE x \in (SUBSET(validators \ {validator})) : x /= {}        
 
+\*        A temporal property checking that finality can eventually be reached in a binary consensus protocol
         check_safety_with_oracle ==
             LET v == CHOOSE v \in (validators \ byzantine_fault_nodes) : TRUE
             IN <>(e_clique_estimate_safety(0, validator_received_msg(v)) \/ e_clique_estimate_safety(1, validator_received_msg(v)))
@@ -163,46 +199,55 @@ CONSTANTS
 
     end define;
 
-    
+\*    A message from a non-byzantine validator is received by all the validators 
     macro make_message(validator, estimate, justification) begin
-\*        if \E x \in validator_received_msg(validator) :
-\*            /\ msg_sender[x] = validator
-\*            /\ msg_justification[x] = justification
-\*            then
-\*                skip;
-\*        else
+            equiv_msg_receivers := Append(equiv_msg_receivers, {});
             msg_sender := Append(msg_sender, validator);
             msg_estimate := Append(msg_estimate, estimate);
             msg_justification := Append(msg_justification, justification);
             all_msg := all_msg \union {cur_msg_id};
             cur_msg_id := cur_msg_id + 1;
-\*        end if;
     end macro;
     
-    
+\*    A validators sends an initial message without receiving information from other validators
+\*    An initial message is only justified by itself
     macro init_validator(validator) begin
         make_message(validator, validators_initial_values[validator], {cur_msg_id});
         validator_init_done[validator] := 1;
     end macro;
     
-    
+\*    An equivocating validator takes different subsets of its received messages to generate
+\*    different estimates and sends the different messages to different subsets of validators. 
     macro make_equivocating_messages(validator) begin
-        equiv_msg_receivers[cur_msg_id] := get_equiv_receivers(validator);
-        equivocating_msg := equivocating_msg \union {cur_msg_id};
+        equiv_msg_receivers := Append(equiv_msg_receivers, get_equiv_receivers(validator));
         cur_subset := get_equivocation_subset_msg(validator);
-        make_message(validator, binary_estimator(cur_subset), cur_subset);
+        equivocating_msg := equivocating_msg \union {cur_msg_id};
+        msg_sender := Append(msg_sender, validator);
+        msg_estimate := Append(msg_estimate, binary_estimator(cur_subset));
+        msg_justification := Append(msg_justification, cur_subset);
+        all_msg := all_msg \union {cur_msg_id};
+        cur_msg_id := cur_msg_id + 1;
     end macro;
     
-    
+\*    A general macro for sending messages
+\*    Non-equivocating and equivocating validators behave differently
+\*    No honest validator will send the same message multiple times consecutively
+\*    Equivocating validators may send different messages to different subsets of validators consecutively.
     macro send_message(validator) begin
-        if validator \notin byzantine_fault_nodes then
-            make_message(validator, binary_estimator(validator_received_msg(validator)), validator_received_msg(validator));
+        if (cur_msg_id > 1 /\ msg_sender[cur_msg_id - 1] /= validator) \/ (validator \in byzantine_fault_nodes) then
+            if validator \notin byzantine_fault_nodes then
+                make_message(validator, binary_estimator(validator_received_msg(validator)), validator_received_msg(validator));
+            else
+                make_equivocating_messages(validator);
+            end if;
         else
-            make_equivocating_messages(validator);
+                skip;
         end if;
     end macro;
     
-   
+\*    Each process is an individual validator
+\*    Validators send messages in random orders
+\*    Validators keep on sending messages until the maximum limit is reached
     fair process v \in validators begin
         Validate:
         while cur_msg_id <= message_ids do 
@@ -221,7 +266,7 @@ end algorithm; ****)
 CONSTANT defaultInitValue
 VARIABLES all_msg, equivocating_msg, msg_sender, msg_estimate, 
           msg_justification, cur_msg_id, validator_init_done, 
-          equiv_msg_receivers, new_msg, cur_subset, pc
+          equiv_msg_receivers, cur_subset, pc
 
 (* define statement *)
  dependencies(message) ==
@@ -238,15 +283,15 @@ dependencies_set(messages) ==
     messages \union UNION{dependencies(m) : m \in messages}
 
 
+
 latest_message(validator, messages) ==
     {msg \in messages:
-
         /\ msg_sender[msg] = validator
-        /\ \A msg2 \in messages:
-            \/ msg = msg2
-            \/ msg2 \notin dependencies(msg)
+        /\ ~\E msg2 \in messages:
+            /\ msg_sender[msg2] = validator
+            /\ msg /= msg2
+            /\ msg \in dependencies(msg2)
     }
-
 
 
 Pick(S) == CHOOSE s \in S : TRUE
@@ -258,9 +303,14 @@ RECURSIVE SetReduce(_, _, _)
     Sum(S) == LET _op(a, b) == a + b IN SetReduce(_op, S, 0)
 
 
+
+
+
+
 score(estimate, messages) ==
     LET ss ==
         {v \in validators:
+            /\ Cardinality(latest_message(v, messages)) = 1
             /\ \E m \in latest_message(v, messages):
                 msg_estimate[m] = estimate}
         ss2 == {validator_weights[v] : v \in ss}
@@ -268,15 +318,16 @@ score(estimate, messages) ==
 
 
 binary_estimator(messages) ==
-    IF score(0, messages) > score(1, messages)
-    THEN 0
-    ELSE 1
+    IF score(1, messages) > score(0, messages)
+    THEN 1
+    ELSE 0
 
 
 equivocation(m1, m2) ==
+    /\ m1 /= m2
     /\ msg_sender[m1] = msg_sender[m2]
-    /\ m1 \notin msg_justification[m2]
-    /\ m2 \notin msg_justification[m1]
+    /\ m1 \notin dependencies(m2)
+    /\ m2 \notin dependencies(m1)
 
 
 byzantine_faulty_node(validator, messages) ==
@@ -291,14 +342,16 @@ byzantine_nodes(messages) ==
 
 
 fault_weight(messages) ==
-    Sum({validator_weights[v] : v \in byzantine_nodes(messages)})
+    LET byz == byzantine_nodes(messages)
+    IN Sum({validator_weights[v] : v \in byz})
 
 
-protocol_states == [t \in 1..Sum({validator_weights[v]: v \in validators})
-                    |-> {ss \in SUBSET(all_msg) : fault_weight(ss) < t}]
 
-
+protocol_states(messages, t) == {ss \in SUBSET(messages) : fault_weight(ss) < t}
 protocol_executions(state1, state2) == state1 \subseteq state2
+
+
+
 
 
 validators_agreeing(v1, v2, estimate, messages) ==
@@ -310,6 +363,8 @@ validators_agreeing(v1, v2, estimate, messages) ==
 
 
 
+
+
 validators_disagreeing(v1, v2, estimate, messages) ==
     /\ Cardinality(latest_message(v1, messages)) = 1
     /\ LET v1_latest_msg == CHOOSE x \in latest_message(v1, messages) : TRUE
@@ -317,7 +372,6 @@ validators_disagreeing(v1, v2, estimate, messages) ==
         /\ LET v2_latest_msg == CHOOSE x \in latest_message(v2, msg_justification[v1_latest_msg]) : TRUE
             IN \E m \in messages: v2_latest_msg \in dependencies(m)
                 /\ estimate /= msg_estimate[m]
-
 
 
 
@@ -337,8 +391,7 @@ e_clique(estimate, messages) == {
 
 e_clique_estimate_safety(estimate, messages) ==
     /\ \E ss \in e_clique(estimate, messages):
-        /\ 2 * Sum({validator_weights[v] : v \in ss}) - Sum({validator_weights[v] : v \in validators}) > byzantine_threshold - fault_weight(messages)
-
+        /\ 2 * Sum({validator_weights[v] : v \in ss}) > Sum({validator_weights[v] : v \in validators}) + byzantine_threshold - fault_weight(messages)
 
 
 validator_received_msg(validator) ==
@@ -348,7 +401,9 @@ validator_received_msg(validator) ==
 
 get_equivocation_subset_msg(validator) == CHOOSE x \in SUBSET(validator_received_msg(validator)) : TRUE
 
-get_equiv_receivers(validator) == CHOOSE x \in SUBSET(validators \ {validator}) : TRUE
+
+get_equiv_receivers(validator) == CHOOSE x \in (SUBSET(validators \ {validator})) : x /= {}
+
 
 check_safety_with_oracle ==
     LET v == CHOOSE v \in (validators \ byzantine_fault_nodes) : TRUE
@@ -357,7 +412,7 @@ check_safety_with_oracle ==
 
 vars == << all_msg, equivocating_msg, msg_sender, msg_estimate, 
            msg_justification, cur_msg_id, validator_init_done, 
-           equiv_msg_receivers, new_msg, cur_subset, pc >>
+           equiv_msg_receivers, cur_subset, pc >>
 
 ProcSet == (validators)
 
@@ -368,41 +423,50 @@ Init == (* Global variables *)
         /\ msg_estimate = <<>>
         /\ msg_justification = <<>>
         /\ cur_msg_id = 1
-        /\ validator_init_done = <<0, 0, 0>>
-        /\ equiv_msg_receivers = <<{}, {}, {}, {}, {}, {}, {}, {}, {}, {}>>
-        /\ new_msg = defaultInitValue
+        /\ validator_init_done = <<0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
+        /\ equiv_msg_receivers = <<>>
         /\ cur_subset = defaultInitValue
         /\ pc = [self \in ProcSet |-> "Validate"]
 
 Validate(self) == /\ pc[self] = "Validate"
                   /\ IF cur_msg_id <= message_ids
                         THEN /\ IF validator_init_done[self] = 0 /\ self \notin byzantine_fault_nodes
-                                   THEN /\ msg_sender' = Append(msg_sender, self)
+                                   THEN /\ equiv_msg_receivers' = Append(equiv_msg_receivers, {})
+                                        /\ msg_sender' = Append(msg_sender, self)
                                         /\ msg_estimate' = Append(msg_estimate, (validators_initial_values[self]))
                                         /\ msg_justification' = Append(msg_justification, ({cur_msg_id}))
                                         /\ all_msg' = (all_msg \union {cur_msg_id})
                                         /\ cur_msg_id' = cur_msg_id + 1
                                         /\ validator_init_done' = [validator_init_done EXCEPT ![self] = 1]
                                         /\ UNCHANGED << equivocating_msg, 
-                                                        equiv_msg_receivers, 
                                                         cur_subset >>
-                                   ELSE /\ IF self \notin byzantine_fault_nodes
-                                              THEN /\ msg_sender' = Append(msg_sender, self)
-                                                   /\ msg_estimate' = Append(msg_estimate, (binary_estimator(validator_received_msg(self))))
-                                                   /\ msg_justification' = Append(msg_justification, (validator_received_msg(self)))
-                                                   /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                   /\ cur_msg_id' = cur_msg_id + 1
-                                                   /\ UNCHANGED << equivocating_msg, 
+                                   ELSE /\ IF (cur_msg_id > 1 /\ msg_sender[cur_msg_id - 1] /= self) \/ (self \in byzantine_fault_nodes)
+                                              THEN /\ IF self \notin byzantine_fault_nodes
+                                                         THEN /\ equiv_msg_receivers' = Append(equiv_msg_receivers, {})
+                                                              /\ msg_sender' = Append(msg_sender, self)
+                                                              /\ msg_estimate' = Append(msg_estimate, (binary_estimator(validator_received_msg(self))))
+                                                              /\ msg_justification' = Append(msg_justification, (validator_received_msg(self)))
+                                                              /\ all_msg' = (all_msg \union {cur_msg_id})
+                                                              /\ cur_msg_id' = cur_msg_id + 1
+                                                              /\ UNCHANGED << equivocating_msg, 
+                                                                              cur_subset >>
+                                                         ELSE /\ equiv_msg_receivers' = Append(equiv_msg_receivers, get_equiv_receivers(self))
+                                                              /\ cur_subset' = get_equivocation_subset_msg(self)
+                                                              /\ equivocating_msg' = (equivocating_msg \union {cur_msg_id})
+                                                              /\ msg_sender' = Append(msg_sender, self)
+                                                              /\ msg_estimate' = Append(msg_estimate, binary_estimator(cur_subset'))
+                                                              /\ msg_justification' = Append(msg_justification, cur_subset')
+                                                              /\ all_msg' = (all_msg \union {cur_msg_id})
+                                                              /\ cur_msg_id' = cur_msg_id + 1
+                                              ELSE /\ TRUE
+                                                   /\ UNCHANGED << all_msg, 
+                                                                   equivocating_msg, 
+                                                                   msg_sender, 
+                                                                   msg_estimate, 
+                                                                   msg_justification, 
+                                                                   cur_msg_id, 
                                                                    equiv_msg_receivers, 
                                                                    cur_subset >>
-                                              ELSE /\ equiv_msg_receivers' = [equiv_msg_receivers EXCEPT ![cur_msg_id] = get_equiv_receivers(self)]
-                                                   /\ equivocating_msg' = (equivocating_msg \union {cur_msg_id})
-                                                   /\ cur_subset' = get_equivocation_subset_msg(self)
-                                                   /\ msg_sender' = Append(msg_sender, self)
-                                                   /\ msg_estimate' = Append(msg_estimate, (binary_estimator(cur_subset')))
-                                                   /\ msg_justification' = Append(msg_justification, cur_subset')
-                                                   /\ all_msg' = (all_msg \union {cur_msg_id})
-                                                   /\ cur_msg_id' = cur_msg_id + 1
                                         /\ UNCHANGED validator_init_done
                              /\ pc' = [pc EXCEPT ![self] = "Validate"]
                         ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
@@ -411,7 +475,6 @@ Validate(self) == /\ pc[self] = "Validate"
                                              msg_justification, cur_msg_id, 
                                              validator_init_done, 
                                              equiv_msg_receivers, cur_subset >>
-                  /\ UNCHANGED new_msg
 
 v(self) == Validate(self)
 
@@ -428,5 +491,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Jul 18 23:06:36 PDT 2019 by anneouyang
+\* Last modified Mon Aug 12 01:08:43 PDT 2019 by anneouyang
 \* Created Tue Jul 16 01:26:45 PDT 2019 by anneouyang
